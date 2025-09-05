@@ -2,8 +2,6 @@ import asyncio
 import json
 import base64
 import os
-
-# Google Generative AI
 from google import genai
 from google.genai import types
 from google.genai.types import (
@@ -12,7 +10,6 @@ from google.genai.types import (
     VoiceConfig,
     PrebuiltVoiceConfig,
 )
-
 # Common components
 from common import (
     BaseWebSocketServer,
@@ -20,18 +17,17 @@ from common import (
     SYSTEM_INSTRUCTION,
 )
 
-# Scholar-only context
 MODEL = "gemini-live-2.5-flash-preview"
 VOICE_NAME = "Puck"
 SEND_SAMPLE_RATE = 16000
 
-# Prefer API key (AI Studio)
+# API key (AI Studio)
 api_key = os.getenv("GOOGLE_API_KEY")
 if api_key:
     client = genai.Client(api_key=api_key)
     logger.info(f"Using AI Studio key (...{api_key[-6:]}, model={MODEL})")
 
-# LiveAPI Configuration (Scholar only)
+# LiveAPI Configuration
 logger.info(f"System instruction being sent to Gemini (Scholar):\n{SYSTEM_INSTRUCTION}")
 config = LiveConnectConfig(
     response_modalities=["AUDIO"],
