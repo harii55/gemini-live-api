@@ -1,0 +1,187 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Gemini Live — Push to Talk</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    body { font-family: system-ui, sans-serif; padding: 24px; }
+    button { padding: 10px 14px; margin-right: 8px; }
+    #log { white-space: pre-wrap; border: 1px solid #ddd; padding: 10px; height: 180px; overflow:auto; }
+  </style>
+</head>
+<body>
+  <h1>Gemini Live — Push to Talk</h1>
+  <p>
+    <label>WS URL:
+      <input id="wsUrl" size="40" value="ws://localhost:8765/live"/>
+    </label>
+    <button id="connectBtn">Connect</button>
+    <button id="closeBtn">Close</button>
+  </p>
+  <p>
+    <button id="talkBtn">🎙️ Hold to Talk</button>
+    <button id="sendTextBtn">Send “hello” (text)</button>
+  </p>
+  <div id="log"></div>
+
+<script>
+
+(async function(){
+  const logEl = document.getElementById('log');
+  const talkBtn = document.getElementById('talkBtn');
+  const sendTextBtn = document.getElementById('sendTextBtn');
+  const connectBtn = document.getElementById('connectBtn');
+  const closeBtn = document.getElementById('closeBtn');
+  const wsUrlInput = document.getElementById('wsUrl');
+
+  let ws, audioCtx, sourceNode, procNode, micStream;
+  let talking = false;
+  let inputRate = 16000; // will update from AudioContext
+
+  function log(s){ logEl.textContent += s + "\n"; logEl.scrollTop = logEl.scrollHeight; }
+
+  function floatTo16BitPCM(float32Array) {
+    const out = new Int16Array(float32Array.length);
+    for (let i=0; i<float32Array.length; i++) {
+      let s = Math.max(-1, Math.min(1, float32Array[i]));
+      out[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+    }
+    return out;
+  }
+
+  // Downsample audio from source rate to 16kHz
+  function downsample(buffer, fromRate, toRate) {
+    if (fromRate === toRate) return buffer;
+    const sampleRateRatio = fromRate / toRate;
+    const newLength = Math.round(buffer.length / sampleRateRatio);
+    const result = new Float32Array(newLength);
+    let offsetResult = 0;
+    let offsetBuffer = 0;
+    while (offsetResult < result.length) {
+      const nextOffsetBuffer = Math.round((offsetResult + 1) * sampleRateRatio);
+      let accum = 0, count = 0;
+      for (let i = offsetBuffer; i < nextOffsetBuffer && i < buffer.length; i++) {
+        accum += buffer[i];
+        count++;
+      }
+      result[offsetResult] = accum / count;
+      offsetResult++;
+      offsetBuffer = nextOffsetBuffer;
+    }
+    return result;
+  }
+
+  async function ensureAudio() {
+    if (audioCtx && micStream) return;
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)({ latencyHint: "interactive" });
+    inputRate = audioCtx.sampleRate; // Set immediately after creating audioCtx
+    micStream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+      }
+    });
+    sourceNode = audioCtx.createMediaStreamSource(micStream);
+
+    // ScriptProcessor is deprecated but very simple and fine for a test client
+    const bufferSize = 4096; // ~85ms at 48k
+    procNode = audioCtx.createScriptProcessor(bufferSize, 1, 1);
+    procNode.onaudioprocess = (e) => {
+      if (!ws || ws.readyState !== 1) return;
+      if (!talking) return;
+      const input = e.inputBuffer.getChannelData(0); // Float32
+      // Downsample to 16kHz for Gemini
+      const downsampled = downsample(input, inputRate, 16000);
+      const pcm = floatTo16BitPCM(downsampled);
+      ws.send(pcm.buffer); // Send as binary!
+    };
+    sourceNode.connect(procNode);
+    procNode.connect(audioCtx.destination); // or audioCtx.createGain().connect(...) if you want silence
+    log(`Audio ready. Input sampleRate=${inputRate} Hz`);
+  }
+
+  // PCM player for binary audio
+  function playPcmBinary(buffer, rate=24000) {
+    console.log("playPcmBinary", buffer, rate);
+    const int16 = new Int16Array(buffer);
+    const float32 = new Float32Array(int16.length);
+    for (let i=0; i<int16.length; i++) float32[i] = Math.max(-1, Math.min(1, int16[i] / 32768));
+    const ctx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    const buf = ctx.createBuffer(1, float32.length, rate);
+    buf.copyToChannel(float32, 0);
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    src.connect(ctx.destination);
+    src.start();
+
+  }
+
+  connectBtn.onclick = async () => {
+    await ensureAudio();
+    const url = wsUrlInput.value;
+    ws = new WebSocket(url);
+    ws.binaryType = "arraybuffer";
+    ws.onopen = () => log(`WS open: ${url}`);
+    ws.onclose = (ev) => log(`WS closed (${ev.code})`);
+    ws.onerror = (e) => log(`WS error: ${e.message || e}`);
+    ws.onmessage = (ev) => {
+      // If message is binary, play it
+      if (ev.data instanceof ArrayBuffer) {
+        playPcmBinary(ev.data, 24000); // Default rate, or pass from server
+        log(`[audio] Received ${ev.data.byteLength} bytes`);
+        return;
+      }
+      try {
+        const m = JSON.parse(ev.data);
+        if (m.type === "connected") log(`Connected to model: ${m.model}`);
+        else if (m.type === "text")   log(`[AI] ${m.data}`);
+        else if (m.type === "audio")  {
+          // If your server includes m.rate, use it. Otherwise default 24000.
+          // If server sends base64, fallback:
+          playPcmBinary(Uint8Array.from(atob(m.data), c => c.charCodeAt(0)).buffer, m.rate || 24000);
+        }
+        else if (m.type === "ready_for_input") log(`Ready for input`);
+        else if (m.type === "turn_complete")   log(`Turn complete`);
+        else log(`[event] ${ev.data}`);
+      } catch {
+        log(`[raw] ${ev.data.slice(0,80)}...`);
+      }
+    };
+  };
+
+  closeBtn.onclick = () => {
+    if (ws && ws.readyState === 1) ws.send(JSON.stringify({type:"close"}));
+  };
+
+  // Push-to-talk button: hold mouse (or space key) to stream; on release send end-of-turn
+  talkBtn.onmousedown = async () => {
+    await ensureAudio();
+    talking = true;
+    log("Talking…");
+  };
+  talkBtn.onmouseup = () => {
+    if (!ws || ws.readyState !== 1) return;
+    talking = false;
+    ws.send(JSON.stringify({ type: "end" }));
+    log("End of turn sent.");
+  };
+  talkBtn.onmouseleave = talkBtn.onmouseup;
+
+  // Spacebar as PTT
+  window.addEventListener('keydown', (e) => {
+    if (e.code === 'Space' && !talking) { e.preventDefault(); talkBtn.onmousedown(); }
+  });
+  window.addEventListener('keyup', (e) => {
+    if (e.code === 'Space' && talking) { e.preventDefault(); talkBtn.onmouseup(); }
+  });
+
+  // Text message
+  sendTextBtn.onclick = () => {
+    if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type:"text", data:"hello" }));
+  };
+})();
+</script>
+</body>
+</html>

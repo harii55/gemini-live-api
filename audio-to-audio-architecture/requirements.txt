@@ -1,0 +1,6 @@
+# Core dependencies for server.py
+websockets>=12.0
+google-generativeai>=0.3.0
+
+# Note: Standard library modules used (no install needed):
+# - asyncio, json, base64, os, logging, traceback

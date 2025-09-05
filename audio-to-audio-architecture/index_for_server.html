@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Bidirectional Audio Client</title>
+</head>
+<body>
+    <h2>Bidirectional Audio AI Client</h2>
+    <button id="startBtn">Start Recording</button>
+    <button id="stopBtn" disabled>Stop Recording</button>
+    <div>
+        <h3>Transcription:</h3>
+        <div id="transcript"></div>
+    </div>
+    <script src="audio-client.js"></script>
+    <script>
+        const client = new AudioClient('ws://localhost:8765');
+        const startBtn = document.getElementById('startBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        const transcriptDiv = document.getElementById('transcript');
+
+        // Initialize buttons as disabled
+        startBtn.disabled = true;
+        stopBtn.disabled = true;
+
+        client.onReady = () => {
+            console.log('Client ready!');
+            startBtn.disabled = false;
+            stopBtn.disabled = true;
+            transcriptDiv.textContent = 'Ready to record!';
+        };
+
+        client.onTextReceived = (text) => {
+            console.log('Received text:', text);
+            transcriptDiv.textContent = text;
+        };
+
+        client.onAudioReceived = (audioData) => {
+            console.log('Received audio data of length:', audioData.length);
+            // Audio playback is handled by the client
+        };
+
+        client.onTurnComplete = () => {
+            console.log('Turn complete');
+            stopBtn.disabled = true;
+            startBtn.disabled = false;
+            transcriptDiv.textContent += ' (Turn complete)';
+        };
+
+        client.onError = (err) => {
+            console.error('Client error:', err);
+            alert('Error: ' + err);
+        };
+
+        startBtn.onclick = async () => {
+            console.log('Start button clicked');
+            startBtn.disabled = true;
+            stopBtn.disabled = false;
+            transcriptDiv.textContent = 'Recording...';
+            await client.startRecording();
+        };
+
+        stopBtn.onclick = () => {
+            console.log('Stop button clicked');
+            stopBtn.disabled = true;
+            startBtn.disabled = false;
+            transcriptDiv.textContent = 'Processing...';
+            client.stopRecording();
+        };
+
+        // Connect on page load
+        console.log('Connecting to server...');
+        transcriptDiv.textContent = 'Connecting to server...';
+        client.connect().catch(err => {
+            console.error('Connection failed:', err);
+            transcriptDiv.textContent = 'Connection failed: ' + err.message;
+        });
+    </script>
+</body>
+</html>
