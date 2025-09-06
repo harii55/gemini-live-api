@@ -43,7 +43,7 @@ This folder contains a complete bidirectional audio-to-audio communication syste
 
 2. **Create virtual environment (recommended):**
    ```bash
-   python -m venv venv
+   python3 -m venv venv
    source venv/bin/activate  # On Windows: venv\Scripts\activate
    ```
    
@@ -66,6 +66,10 @@ This folder contains a complete bidirectional audio-to-audio communication syste
 
 6. **Open frontend:**
    Open `index_for_server.html` in your browser and start recording!
+    ```bash
+   google-chrome index_for_server.html 
+   ```
+
 
 ## Usage
 
