@@ -10,7 +10,9 @@
     <button id="stopBtn" disabled>Stop Recording</button>
     <div>
         <h3>Transcription:</h3>
-        <div id="transcript"></div>
+        <div id="transcript-container" style="max-width:600px; max-height:300px; overflow-y:auto; border:1px solid #ccc; padding:10px; background:#fafafa;">
+            <pre id="transcript" style="white-space: pre-wrap; word-break: break-word; margin:0; font-family:inherit;"></pre>
+        </div>
     </div>
     <script src="audio-client.js"></script>
     <script>
@@ -30,9 +32,44 @@
             transcriptDiv.textContent = 'Ready to record!';
         };
 
+        let textBuffer = '';
+        let bufferTimeout;
+
         client.onTextReceived = (text) => {
             console.log('Received text:', text);
-            transcriptDiv.textContent = text;
+            
+            // Add incoming text to buffer
+            textBuffer += text;
+            
+            // Clear any existing timeout
+            if (bufferTimeout) {
+                clearTimeout(bufferTimeout);
+            }
+            
+            // Set a timeout to flush the buffer after a short delay
+            bufferTimeout = setTimeout(() => {
+                if (textBuffer.trim()) {
+                    // Clean up the buffered text
+                    let cleanText = textBuffer.trim().replace(/\s+/g, ' ');
+                    
+                    // If there's existing content, add a space if needed
+                    if (transcriptDiv.textContent && transcriptDiv.textContent.trim()) {
+                        const lastChar = transcriptDiv.textContent.slice(-1);
+                        if (!/[\s\.\!\?\,\;]/.test(lastChar)) {
+                            transcriptDiv.textContent += ' ';
+                        }
+                    }
+                    
+                    // Add the clean text
+                    transcriptDiv.textContent += cleanText;
+                    
+                    // Clear the buffer
+                    textBuffer = '';
+                    
+                    // Scroll to bottom
+                    transcriptDiv.parentElement.scrollTop = transcriptDiv.parentElement.scrollHeight;
+                }
+            }, 100); // Wait 100ms before flushing buffer
         };
 
         client.onAudioReceived = (audioData) => {
@@ -44,7 +81,55 @@
             console.log('Turn complete');
             stopBtn.disabled = true;
             startBtn.disabled = false;
-            transcriptDiv.textContent += ' (Turn complete)';
+            
+            // Flush any remaining buffer content immediately
+            if (bufferTimeout) {
+                clearTimeout(bufferTimeout);
+            }
+            if (textBuffer.trim()) {
+                let cleanText = textBuffer.trim().replace(/\s+/g, ' ');
+                if (transcriptDiv.textContent && transcriptDiv.textContent.trim()) {
+                    const lastChar = transcriptDiv.textContent.slice(-1);
+                    if (!/[\s\.\!\?\,\;]/.test(lastChar)) {
+                        transcriptDiv.textContent += ' ';
+                    }
+                }
+                transcriptDiv.textContent += cleanText;
+                textBuffer = '';
+            }
+            
+            // Add proper line breaks after turn completion
+            transcriptDiv.textContent += '\n\n--- End of Response ---\n\n';
+            transcriptDiv.parentElement.scrollTop = transcriptDiv.parentElement.scrollHeight;
+        };
+
+        // Handle interruption from server
+        client.onInterrupted = (message) => {
+            console.log('Response interrupted:', message);
+            
+            // Flush any remaining buffer content immediately
+            if (bufferTimeout) {
+                clearTimeout(bufferTimeout);
+            }
+            if (textBuffer.trim()) {
+                let cleanText = textBuffer.trim().replace(/\s+/g, ' ');
+                if (transcriptDiv.textContent && transcriptDiv.textContent.trim()) {
+                    const lastChar = transcriptDiv.textContent.slice(-1);
+                    if (!/[\s\.\!\?\,\;]/.test(lastChar)) {
+                        transcriptDiv.textContent += ' ';
+                    }
+                }
+                transcriptDiv.textContent += cleanText;
+                textBuffer = '';
+            }
+            
+            // Add interruption marker
+            transcriptDiv.textContent += '\n\n[INTERRUPTED] ';
+            transcriptDiv.parentElement.scrollTop = transcriptDiv.parentElement.scrollHeight;
+            
+            // Reset button states
+            stopBtn.disabled = true;
+            startBtn.disabled = false;
         };
 
         client.onError = (err) => {
@@ -56,7 +141,16 @@
             console.log('Start button clicked');
             startBtn.disabled = true;
             stopBtn.disabled = false;
-            transcriptDiv.textContent = 'Recording...';
+            
+            // If AI is currently speaking, interrupt it first
+            if (client.isModelSpeaking) {
+                console.log('Interrupting AI response...');
+                client.interrupt();
+                transcriptDiv.textContent += '\n\n[USER INTERRUPTING] ';
+            }
+            
+            transcriptDiv.textContent += 'Recording... ';
+            transcriptDiv.parentElement.scrollTop = transcriptDiv.parentElement.scrollHeight;
             await client.startRecording();
         };
 
@@ -64,13 +158,22 @@
             console.log('Stop button clicked');
             stopBtn.disabled = true;
             startBtn.disabled = false;
-            transcriptDiv.textContent = 'Processing...';
+            transcriptDiv.textContent += 'Processing... ';
+            transcriptDiv.parentElement.scrollTop = transcriptDiv.parentElement.scrollHeight;
             client.stopRecording();
         };
 
+        // Add keyboard shortcut for quick interruption (Spacebar)
+        document.addEventListener('keydown', (event) => {
+            if (event.code === 'Space' && !startBtn.disabled && client.isModelSpeaking) {
+                event.preventDefault();
+                startBtn.click();
+            }
+        });
+
         // Connect on page load
         console.log('Connecting to server...');
-        transcriptDiv.textContent = 'Connecting to server...';
+        transcriptDiv.textContent = 'Connecting to server... ';
         client.connect().catch(err => {
             console.error('Connection failed:', err);
             transcriptDiv.textContent = 'Connection failed: ' + err.message;

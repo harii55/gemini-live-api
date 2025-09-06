@@ -111,6 +111,8 @@ class AudioClient {
                             // Handle receiving audio data from server
                             const audioData = message.data;
                             this.onAudioReceived(audioData);
+                            // Set model speaking flag when we start receiving audio
+                            this.isModelSpeaking = true;
                             await this.playAudio(audioData);
                         }
                         else if (message.type === 'text') {
@@ -123,7 +125,9 @@ class AudioClient {
                             this.onTurnComplete();
                         }
                         else if (message.type === 'interrupted') {
-                            // Response was interrupted
+                            // Response was interrupted - immediately stop audio playback
+                            console.log('Interruption detected - stopping audio playback');
+                            this.interrupt(); // This will stop current audio and clear queue
                             this.isModelSpeaking = false;
                             this.onInterrupted(message.data);
                         }
@@ -269,7 +273,7 @@ class AudioClient {
     }
     
     // Decode and play received audio
-    async playAudio(base64Audio) {
+    async playAudio(base64Audio) {        
         try {
             // Decode the base64 audio data
             const audioData = this._base64ToArrayBuffer(base64Audio);
@@ -309,8 +313,6 @@ class AudioClient {
                 this.playNextInQueue();
             }
 
-            // Set flag to indicate model is speaking
-            this.isModelSpeaking = true;
         } catch (error) {
             console.error('Error playing audio:', error);
         }
@@ -318,7 +320,8 @@ class AudioClient {
 
     // Play next audio chunk from queue
     playNextInQueue() {
-        if (this.audioQueue.length === 0) {
+        // Check if we should stop due to interruption or no model speaking
+        if (this.audioQueue.length === 0 || !this.isModelSpeaking) {
             this.isPlaying = false;
             return;
         }
