@@ -97,49 +97,58 @@ class AudioClient {
 
                 this.ws.onmessage = async (event) => {
                     try {
-                        // Log raw message data to help debug
-                        console.log('Raw WebSocket message received:', event.data);
-
-                        const message = JSON.parse(event.data);
-
-                        if (message.type === 'ready') {
-                            this.isConnected = true;
-                            this.onReady();
-                            resolve();
-                        }
-                        else if (message.type === 'audio') {
-                            // Handle receiving audio data from server
-                            const audioData = message.data;
-                            this.onAudioReceived(audioData);
+                        // Check if message is binary (audio data) or text (control messages)
+                        if (event.data instanceof ArrayBuffer) {
+                            // Handle binary audio data as ArrayBuffer
+                            console.log('Received binary audio data (ArrayBuffer):', event.data.byteLength, 'bytes');
+                            this.onAudioReceived(event.data);
                             // Set model speaking flag when we start receiving audio
                             this.isModelSpeaking = true;
-                            await this.playAudio(audioData);
-                        }
-                        else if (message.type === 'text') {
-                            // Handle receiving text from server
-                            this.onTextReceived(message.data);
-                        }
-                        else if (message.type === 'turn_complete') {
-                            // Model is done speaking
-                            this.isModelSpeaking = false;
-                            this.onTurnComplete();
-                        }
-                        else if (message.type === 'interrupted') {
-                            // Response was interrupted - immediately stop audio playback
-                            console.log('Interruption detected - stopping audio playback');
-                            this.interrupt(); // This will stop current audio and clear queue
-                            this.isModelSpeaking = false;
-                            this.onInterrupted(message.data);
-                        }
-                        else if (message.type === 'error') {
-                            // Handle server error
-                            this.onError(message.data);
-                        }
-                        else if (message.type === 'session_id') {
-                            // Handle session ID
-                            console.log('Received session ID message:', message);
-                            this.sessionId = message.data;
-                            this.onSessionIdReceived(message.data);
+                            await this.playAudioBinary(event.data);
+                        } else if (event.data instanceof Blob) {
+                            // Handle binary audio data as Blob
+                            console.log('Received binary audio data (Blob):', event.data.size, 'bytes');
+                            const arrayBuffer = await event.data.arrayBuffer();
+                            this.onAudioReceived(arrayBuffer);
+                            // Set model speaking flag when we start receiving audio
+                            this.isModelSpeaking = true;
+                            await this.playAudioBinary(arrayBuffer);
+                        } else {
+                            // Handle JSON control messages
+                            console.log('Raw WebSocket message received:', event.data);
+                            const message = JSON.parse(event.data);
+
+                            if (message.type === 'ready') {
+                                this.isConnected = true;
+                                this.onReady();
+                                resolve();
+                            }
+                            else if (message.type === 'text') {
+                                // Handle receiving text from server
+                                this.onTextReceived(message.data);
+                            }
+                            else if (message.type === 'turn_complete') {
+                                // Model is done speaking
+                                this.isModelSpeaking = false;
+                                this.onTurnComplete();
+                            }
+                            else if (message.type === 'interrupted') {
+                                // Response was interrupted - immediately stop audio playback
+                                console.log('Interruption detected - stopping audio playback');
+                                this.interrupt(); // This will stop current audio and clear queue
+                                this.isModelSpeaking = false;
+                                this.onInterrupted(message.data);
+                            }
+                            else if (message.type === 'error') {
+                                // Handle server error
+                                this.onError(message.data);
+                            }
+                            else if (message.type === 'session_id') {
+                                // Handle session ID
+                                console.log('Received session ID message:', message);
+                                this.sessionId = message.data;
+                                this.onSessionIdReceived(message.data);
+                            }
                         }
                     } catch (error) {
                         console.error('Error processing message:', error);
@@ -213,12 +222,9 @@ class AudioClient {
                 // Send to server if connected
                 if (this.isConnected && this.isRecording) {
                     const audioBuffer = new Uint8Array(int16Data.buffer);
-                    const base64Audio = this._arrayBufferToBase64(audioBuffer);
                     
-                    this.ws.send(JSON.stringify({
-                        type: 'audio',
-                        data: base64Audio
-                    }));
+                    // Send raw PCM bytes directly as binary data
+                    this.ws.send(audioBuffer);
                 }
             };
             
@@ -272,11 +278,58 @@ class AudioClient {
         }
     }
     
-    // Decode and play received audio
+    // Decode and play received binary audio
+    async playAudioBinary(audioBuffer) {        
+        try {
+            // Create an audio context if needed
+            if (!this.audioContext || this.audioContext.state === 'closed') {
+                this.audioContext = new (window.AudioContext || window.webkitAudioContext)({
+                    sampleRate: 24000 // Match the sample rate received from server
+                });
+
+                // Track this context for cleanup
+                window.existingAudioContexts.push(this.audioContext);
+            }
+
+            // Resume audio context if it's suspended
+            if (this.audioContext.state === 'suspended') {
+                await this.audioContext.resume();
+            }
+
+            // Decode the raw PCM audio data
+            // Assuming 16-bit PCM at 24kHz from Gemini
+            const audioData = new Int16Array(audioBuffer);
+            const audioBufferNode = this.audioContext.createBuffer(1, audioData.length, 24000);
+            const channelData = audioBufferNode.getChannelData(0);
+            
+            // Convert Int16 to Float32 for Web Audio API
+            for (let i = 0; i < audioData.length; i++) {
+                channelData[i] = audioData[i] / 32768.0;
+            }
+
+            // Queue for playback
+            this.audioQueue.push(audioBufferNode);
+            
+            // Start playing if not already playing
+            if (!this.isPlaying) {
+                await this.playNextInQueue();
+            }
+        } catch (error) {
+            console.error('Error playing binary audio:', error);
+        }
+    }
+    
+    // Decode and play received audio (legacy method - now updated for binary)
     async playAudio(base64Audio) {        
         try {
-            // Decode the base64 audio data
-            const audioData = this._base64ToArrayBuffer(base64Audio);
+            // Convert base64 to binary and use the new binary method
+            const binaryString = atob(base64Audio);
+            const len = binaryString.length;
+            const bytes = new Uint8Array(len);
+            for (let i = 0; i < len; i++) {
+                bytes[i] = binaryString.charCodeAt(i);
+            }
+            await this.playAudioBinary(bytes.buffer);
 
             // Create an audio context if needed
             if (!this.audioContext || this.audioContext.state === 'closed') {
@@ -344,16 +397,24 @@ class AudioClient {
             // Get next audio data from queue
             const audioData = this.audioQueue.shift();
 
-            // Convert Int16Array to Float32Array for AudioBuffer
-            const int16Array = new Int16Array(audioData);
-            const float32Array = new Float32Array(int16Array.length);
-            for (let i = 0; i < int16Array.length; i++) {
-                float32Array[i] = int16Array[i] / 32768.0;
-            }
+            let audioBuffer;
+            
+            // Check if audioData is already an AudioBuffer or raw data
+            if (audioData instanceof AudioBuffer) {
+                // Already an AudioBuffer, use directly
+                audioBuffer = audioData;
+            } else {
+                // Convert raw data to AudioBuffer (legacy support)
+                const int16Array = new Int16Array(audioData);
+                const float32Array = new Float32Array(int16Array.length);
+                for (let i = 0; i < int16Array.length; i++) {
+                    float32Array[i] = int16Array[i] / 32768.0;
+                }
 
-            // Create an AudioBuffer
-            const audioBuffer = this.audioContext.createBuffer(1, float32Array.length, 24000);
-            audioBuffer.getChannelData(0).set(float32Array);
+                // Create an AudioBuffer
+                audioBuffer = this.audioContext.createBuffer(1, float32Array.length, 24000);
+                audioBuffer.getChannelData(0).set(float32Array);
+            }
 
             // Create a source node
             const source = this.audioContext.createBufferSource();
@@ -449,25 +510,4 @@ class AudioClient {
         this.isConnected = false;
     }
     
-    // Utility: Convert ArrayBuffer to Base64
-    _arrayBufferToBase64(buffer) {
-        let binary = '';
-        const bytes = new Uint8Array(buffer);
-        const len = bytes.byteLength;
-        for (let i = 0; i < len; i++) {
-            binary += String.fromCharCode(bytes[i]);
-        }
-        return btoa(binary);
-    }
-    
-    // Utility: Convert Base64 to ArrayBuffer
-    _base64ToArrayBuffer(base64) {
-        const binaryString = atob(base64);
-        const len = binaryString.length;
-        const bytes = new Uint8Array(len);
-        for (let i = 0; i < len; i++) {
-            bytes[i] = binaryString.charCodeAt(i);
-        }
-        return bytes.buffer;
-    }
 }

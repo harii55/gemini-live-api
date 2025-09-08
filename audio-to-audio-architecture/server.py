@@ -48,9 +48,7 @@ class LiveAPIWebSocketServer(BaseWebSocketServer):
         # Store reference to client
         self.active_clients[client_id] = websocket
 
-        # Send ready message to client
-        await websocket.send(json.dumps({"type": "ready"}))
-        logger.info(f"Sent ready message to client {client_id}")
+        logger.info(f"Starting audio processing for client {client_id}")
 
         # Connect to Gemini using LiveAPI
         async with client.aio.live.connect(model=MODEL, config=config) as session:
@@ -62,18 +60,19 @@ class LiveAPIWebSocketServer(BaseWebSocketServer):
                 async def handle_websocket_messages():
                     async for message in websocket:
                         try:
-                            data = json.loads(message)
-                            if data.get("type") == "audio":
-                                # Decode base64 audio data
-                                audio_bytes = base64.b64decode(data.get("data", ""))
-                                # Put audio in queue for processing
-                                await audio_queue.put(audio_bytes)
-                            elif data.get("type") == "end":
-                                # Client is done sending audio for this turn
-                                logger.info("Received end signal from client")
-                            elif data.get("type") == "text":
-                                # Handle text messages (not implemented in this simple version)
-                                logger.info(f"Received text: {data.get('data')}")
+                            # Check if message is binary (audio data) or text (control messages)
+                            if isinstance(message, bytes):
+                                # Handle binary audio data directly
+                                await audio_queue.put(message)
+                            else:
+                                # Handle JSON control messages
+                                data = json.loads(message)
+                                if data.get("type") == "end":
+                                    # Client is done sending audio for this turn
+                                    logger.info("Received end signal from client")
+                                elif data.get("type") == "text":
+                                    # Handle text messages (not implemented in this simple version)
+                                    logger.info(f"Received text: {data.get('data')}")
                         except json.JSONDecodeError:
                             logger.error("Invalid JSON message received")
                         except Exception as e:
@@ -133,12 +132,8 @@ class LiveAPIWebSocketServer(BaseWebSocketServer):
                             if server_content and server_content.model_turn:
                                 for part in server_content.model_turn.parts:
                                     if part.inline_data:
-                                        # Send audio to client only (don't play locally)
-                                        b64_audio = base64.b64encode(part.inline_data.data).decode('utf-8')
-                                        await websocket.send(json.dumps({
-                                            "type": "audio",
-                                            "data": b64_audio
-                                        }))
+                                        # Send raw PCM audio data directly as binary
+                                        await websocket.send(part.inline_data.data)
 
                             # Handle turn completion
                             if server_content and server_content.turn_complete:

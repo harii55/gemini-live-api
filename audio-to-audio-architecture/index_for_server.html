@@ -73,7 +73,9 @@
         };
 
         client.onAudioReceived = (audioData) => {
-            console.log('Received audio data of length:', audioData.length);
+            // audioData is now an ArrayBuffer (binary data)
+            const dataSize = audioData instanceof ArrayBuffer ? audioData.byteLength : (audioData ? audioData.length : 0);
+            console.log('Received binary audio data of size:', dataSize, 'bytes');
             // Audio playback is handled by the client
         };
 
